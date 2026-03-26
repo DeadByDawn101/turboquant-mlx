@@ -104,6 +104,81 @@ model, tokenizer = load("mlx-community/Llama-3.2-8B-Instruct-4bit")
 model = patch_model_attention(model, compression_config={"r_bits": 4, "theta_bits": 4})
 ```
 
+## 🔌 Backends
+
+TurboQuant-MLX supports multiple backends for different use cases:
+
+### mlx-lm (Recommended for Apple Silicon)
+
+Native MLX implementation with full TurboQuant compression:
+
+```python
+from turboquant_mlx import TurboQuantAttention, patch_model_attention
+from mlx_lm import load
+
+model, tokenizer = load("mlx-community/Llama-3.2-8B-Instruct-4bit")
+model = patch_model_attention(model, compression_config={"r_bits": 4, "theta_bits": 4})
+
+# Generate with compressed KV cache
+output = model.generate(prompt, max_tokens=1000)
+```
+
+### HuggingFace Transformers
+
+For PyTorch-based inference with TurboQuant KV compression:
+
+```python
+from turboquant_mlx.hf_patch import load_and_patch
+
+# Load model with TurboQuant automatically enabled
+model, tokenizer = load_and_patch("Qwen/Qwen2.5-7B-Instruct")
+
+inputs = tokenizer("Hello, how are you?", return_tensors="pt")
+outputs = model.generate(**inputs, max_new_tokens=100)
+# TurboQuant compression active during generation
+print(tokenizer.decode(outputs[0]))
+```
+
+Or manually create the cache:
+
+```python
+from turboquant_mlx.hf_patch import TurboQuantHFCache
+
+cache = TurboQuantHFCache(r_bits=4, theta_bits=4, compress_after=256)
+outputs = model.generate(**inputs, past_key_values=cache)
+print(cache.stats())  # Compression statistics
+```
+
+### Ollama
+
+For Ollama integration with stats tracking:
+
+```python
+from turboquant_mlx.ollama_patch import TurboQuantOllamaClient
+
+client = TurboQuantOllamaClient()
+
+response = client.chat("qwen2.5:7b", messages=[
+    {"role": "user", "content": "Explain quantum computing"}
+])
+print(response.choices[0].message.content)
+
+# Check memory savings estimate
+print(client.stats())
+# {'total_tokens': 150, 'estimated_memory_savings_mb': 0.5, ...}
+```
+
+**Note:** Ollama manages its own KV cache internally. The TurboQuantOllamaClient provides monitoring and a consistent interface. True KV compression requires mlx-lm or llama.cpp backends where we can intercept the actual attention mechanism.
+
+Optimize Ollama environment:
+
+```python
+from turboquant_mlx.ollama_patch import patch_ollama_env
+
+patch_ollama_env(num_parallel=4, num_ctx=32768, flash_attention=True)
+# Now start Ollama with optimized settings
+```
+
 ## 📈 Benchmarks
 
 Run the benchmark suite:

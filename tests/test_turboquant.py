@@ -509,5 +509,306 @@ class TestAsymmetric:
         assert mse_v < 1.0, f"Value MSE too high: {mse_v}"
 
 
+class TestOllamaIntegration:
+    """Test Ollama integration with TurboQuantOllamaClient."""
+    
+    def test_client_instantiation(self):
+        """Test that TurboQuantOllamaClient can be instantiated."""
+        try:
+            from turboquant_mlx.ollama_patch import TurboQuantOllamaClient, HAS_OPENAI
+        except ImportError:
+            pytest.skip("ollama_patch module not available")
+        
+        if not HAS_OPENAI:
+            # Should raise ImportError when openai not installed
+            with pytest.raises(ImportError):
+                TurboQuantOllamaClient()
+        else:
+            # Should instantiate successfully
+            client = TurboQuantOllamaClient()
+            assert client is not None
+            assert client.base_url == "http://localhost:11434/v1"
+    
+    def test_client_methods_exist(self):
+        """Test that client has .chat() and .generate() methods."""
+        try:
+            from turboquant_mlx.ollama_patch import TurboQuantOllamaClient, HAS_OPENAI
+        except ImportError:
+            pytest.skip("ollama_patch module not available")
+        
+        if not HAS_OPENAI:
+            pytest.skip("openai package not installed")
+        
+        client = TurboQuantOllamaClient()
+        
+        # Check methods exist
+        assert hasattr(client, 'chat')
+        assert callable(client.chat)
+        assert hasattr(client, 'generate')
+        assert callable(client.generate)
+        assert hasattr(client, 'stats')
+        assert callable(client.stats)
+    
+    def test_stats_tracking(self):
+        """Test that stats tracking works correctly."""
+        from turboquant_mlx.ollama_patch import OllamaStats
+        
+        stats = OllamaStats(compression_ratio=4.0, bytes_per_token_kv=512)
+        
+        # Initially empty
+        assert stats.total_input_tokens == 0
+        assert stats.total_output_tokens == 0
+        assert stats.total_requests == 0
+        
+        # Update with some data
+        stats.update(input_tokens=100, output_tokens=50, latency_ms=500.0)
+        
+        assert stats.total_input_tokens == 100
+        assert stats.total_output_tokens == 50
+        assert stats.total_requests == 1
+        assert stats.total_latency_ms == 500.0
+        
+        # Check summary
+        summary = stats.summary()
+        assert summary["total_tokens"] == 150
+        assert summary["avg_latency_ms"] == 500.0
+        assert summary["compression_ratio"] == 4.0
+        assert summary["estimated_memory_savings_mb"] > 0
+    
+    def test_stats_reset(self):
+        """Test that stats can be reset."""
+        from turboquant_mlx.ollama_patch import OllamaStats
+        
+        stats = OllamaStats()
+        stats.update(100, 50, 500.0)
+        stats.reset()
+        
+        assert stats.total_input_tokens == 0
+        assert stats.total_output_tokens == 0
+        assert stats.total_requests == 0
+    
+    def test_patch_ollama_env(self):
+        """Test that patch_ollama_env sets correct environment variables."""
+        import os
+        from turboquant_mlx.ollama_patch import patch_ollama_env
+        
+        # Save original env
+        original_env = {
+            k: os.environ.get(k) 
+            for k in ["OLLAMA_NUM_PARALLEL", "OLLAMA_FLASH_ATTENTION", 
+                     "OLLAMA_KEEP_ALIVE", "OLLAMA_NUM_CTX"]
+        }
+        
+        try:
+            env = patch_ollama_env(
+                num_parallel=8,
+                num_ctx=16384,
+                flash_attention=True,
+                keep_alive="12h"
+            )
+            
+            assert os.environ.get("OLLAMA_NUM_PARALLEL") == "8"
+            assert os.environ.get("OLLAMA_FLASH_ATTENTION") == "1"
+            assert os.environ.get("OLLAMA_KEEP_ALIVE") == "12h"
+            assert os.environ.get("OLLAMA_NUM_CTX") == "16384"
+            
+            # Verify return value
+            assert env["OLLAMA_NUM_PARALLEL"] == "8"
+            assert env["OLLAMA_FLASH_ATTENTION"] == "1"
+        finally:
+            # Restore original env
+            for k, v in original_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+
+class TestHFIntegration:
+    """Test HuggingFace transformers integration."""
+    
+    def test_cache_instantiation_without_transformers(self):
+        """Test graceful ImportError when transformers not installed."""
+        from turboquant_mlx.hf_patch import HAS_TRANSFORMERS, HAS_TORCH
+        
+        if HAS_TRANSFORMERS and HAS_TORCH:
+            pytest.skip("transformers is installed - testing without it not possible")
+        
+        # Should raise ImportError with helpful message
+        from turboquant_mlx.hf_patch import TurboQuantHFCache
+        with pytest.raises(ImportError) as excinfo:
+            TurboQuantHFCache()
+        
+        assert "transformers" in str(excinfo.value).lower() or "torch" in str(excinfo.value).lower()
+    
+    def test_cache_instantiation_with_transformers(self):
+        """Test TurboQuantHFCache can be instantiated when transformers is available."""
+        from turboquant_mlx.hf_patch import HAS_TRANSFORMERS, HAS_TORCH
+        
+        if not (HAS_TRANSFORMERS and HAS_TORCH):
+            pytest.skip("transformers or torch not installed")
+        
+        from turboquant_mlx.hf_patch import TurboQuantHFCache
+        
+        cache = TurboQuantHFCache(
+            r_bits=4,
+            theta_bits=4,
+            group_size=128,
+        )
+        
+        assert cache is not None
+        assert cache.r_bits == 4
+        assert cache.theta_bits == 4
+        assert cache.group_size == 128
+    
+    def test_dynamic_cache_interface(self):
+        """Test TurboQuantHFCache exposes correct DynamicCache interface."""
+        from turboquant_mlx.hf_patch import HAS_TRANSFORMERS, HAS_TORCH
+        
+        if not (HAS_TRANSFORMERS and HAS_TORCH):
+            pytest.skip("transformers or torch not installed")
+        
+        from turboquant_mlx.hf_patch import TurboQuantHFCache
+        
+        cache = TurboQuantHFCache()
+        
+        # Should have DynamicCache methods
+        assert hasattr(cache, 'update')
+        assert hasattr(cache, 'get_seq_length')
+        assert hasattr(cache, 'get_max_length')
+        assert hasattr(cache, 'key_cache')
+        assert hasattr(cache, 'value_cache')
+    
+    def test_load_and_patch_import_error(self):
+        """Test load_and_patch raises ImportError when transformers not installed."""
+        from turboquant_mlx.hf_patch import HAS_TRANSFORMERS, HAS_TORCH
+        
+        if HAS_TRANSFORMERS and HAS_TORCH:
+            pytest.skip("transformers is installed - testing ImportError not possible")
+        
+        from turboquant_mlx.hf_patch import load_and_patch
+        
+        with pytest.raises(ImportError) as excinfo:
+            load_and_patch("some-model")
+        
+        assert "transformers" in str(excinfo.value).lower() or "torch" in str(excinfo.value).lower()
+    
+    def test_cache_update_method(self):
+        """Test the update() method compresses keys correctly."""
+        from turboquant_mlx.hf_patch import HAS_TRANSFORMERS, HAS_TORCH
+        
+        if not (HAS_TRANSFORMERS and HAS_TORCH):
+            pytest.skip("transformers or torch not installed")
+        
+        import torch
+        from turboquant_mlx.hf_patch import TurboQuantHFCache
+        
+        cache = TurboQuantHFCache(
+            r_bits=4,
+            theta_bits=4,
+            group_size=32,
+            compress_after=32,
+        )
+        
+        # Create test tensors
+        batch, num_heads, seq_len, head_dim = 1, 4, 64, 64
+        keys = torch.randn(batch, num_heads, seq_len, head_dim)
+        values = torch.randn(batch, num_heads, seq_len, head_dim)
+        
+        # Update cache
+        out_keys, out_values = cache.update(keys, values, layer_idx=0)
+        
+        # Verify shapes preserved
+        assert out_keys.shape == keys.shape
+        assert out_values.shape == values.shape
+        
+        # Verify sequence length tracking
+        assert cache.get_seq_length(layer_idx=0) == seq_len
+    
+    def test_from_legacy_cache(self):
+        """Test from_legacy_cache classmethod."""
+        from turboquant_mlx.hf_patch import HAS_TRANSFORMERS, HAS_TORCH
+        
+        if not (HAS_TRANSFORMERS and HAS_TORCH):
+            pytest.skip("transformers or torch not installed")
+        
+        import torch
+        from turboquant_mlx.hf_patch import TurboQuantHFCache
+        
+        # Create legacy format cache
+        batch, num_heads, seq_len, head_dim = 1, 4, 32, 64
+        k1 = torch.randn(batch, num_heads, seq_len, head_dim)
+        v1 = torch.randn(batch, num_heads, seq_len, head_dim)
+        k2 = torch.randn(batch, num_heads, seq_len, head_dim)
+        v2 = torch.randn(batch, num_heads, seq_len, head_dim)
+        
+        legacy_cache = ((k1, v1), (k2, v2))
+        
+        # Convert to TurboQuantHFCache
+        cache = TurboQuantHFCache.from_legacy_cache(legacy_cache)
+        
+        assert cache is not None
+        assert len(cache.key_cache) == 2
+        assert cache.get_seq_length(layer_idx=0) == seq_len
+        assert cache.get_seq_length(layer_idx=1) == seq_len
+    
+    def test_cache_stats(self):
+        """Test compression statistics tracking."""
+        from turboquant_mlx.hf_patch import HAS_TRANSFORMERS, HAS_TORCH
+        
+        if not (HAS_TRANSFORMERS and HAS_TORCH):
+            pytest.skip("transformers or torch not installed")
+        
+        from turboquant_mlx.hf_patch import TurboQuantHFCache
+        
+        cache = TurboQuantHFCache(r_bits=4, theta_bits=4)
+        
+        stats = cache.stats()
+        
+        assert "total_tokens" in stats
+        assert "compressed_tokens" in stats
+        assert "estimated_compression_ratio" in stats
+
+
+class TestLazyImports:
+    """Test lazy import functions in __init__.py."""
+    
+    def test_get_ollama_client(self):
+        """Test get_ollama_client lazy import."""
+        from turboquant_mlx import get_ollama_client
+        from turboquant_mlx.ollama_patch import HAS_OPENAI
+        
+        if not HAS_OPENAI:
+            with pytest.raises(ImportError):
+                get_ollama_client()
+        else:
+            client = get_ollama_client()
+            assert client is not None
+    
+    def test_get_hf_cache_class(self):
+        """Test get_hf_cache_class lazy import."""
+        from turboquant_mlx import get_hf_cache_class
+        from turboquant_mlx.hf_patch import HAS_TRANSFORMERS, HAS_TORCH
+        
+        CacheClass = get_hf_cache_class()
+        assert CacheClass is not None
+        assert CacheClass.__name__ == "TurboQuantHFCache"
+    
+    def test_patch_transformers_function(self):
+        """Test patch_transformers lazy import."""
+        from turboquant_mlx import patch_transformers
+        from turboquant_mlx.hf_patch import HAS_TRANSFORMERS, HAS_TORCH
+        
+        if not (HAS_TRANSFORMERS and HAS_TORCH):
+            with pytest.raises(ImportError):
+                patch_transformers()
+        else:
+            # Just test it doesn't crash - actual patching tested separately
+            result = patch_transformers()
+            # Unpatch to not affect other tests
+            from turboquant_mlx.hf_patch import unpatch_transformers
+            unpatch_transformers()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

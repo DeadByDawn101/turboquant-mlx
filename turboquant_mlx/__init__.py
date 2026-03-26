@@ -43,4 +43,83 @@ __all__ = [
     # Attention
     "TurboQuantAttention",
     "create_turbo_attention",
+    # Lazy-loaded integrations
+    "get_ollama_client",
+    "get_hf_cache_class",
+    "patch_transformers",
 ]
+
+
+# ============================================================================
+# Optional integrations (imported lazily to avoid hard dependencies)
+# ============================================================================
+
+def get_ollama_client(**kwargs):
+    """
+    Get a TurboQuantOllamaClient instance.
+    
+    Lazily imports the Ollama integration to avoid requiring the 'openai' package
+    unless this function is actually called.
+    
+    Args:
+        **kwargs: Arguments passed to TurboQuantOllamaClient
+        
+    Returns:
+        TurboQuantOllamaClient instance
+        
+    Raises:
+        ImportError: If the 'openai' package is not installed
+        
+    Example:
+        >>> client = get_ollama_client()
+        >>> response = client.chat("qwen2.5:7b", messages=[...])
+        >>> print(client.stats())
+    """
+    from .ollama_patch import TurboQuantOllamaClient
+    return TurboQuantOllamaClient(**kwargs)
+
+
+def get_hf_cache_class():
+    """
+    Get the TurboQuantHFCache class for HuggingFace transformers.
+    
+    Lazily imports the HF integration to avoid requiring 'transformers' 
+    and 'torch' packages unless this function is actually called.
+    
+    Returns:
+        TurboQuantHFCache class
+        
+    Raises:
+        ImportError: If 'transformers' or 'torch' is not installed
+        
+    Example:
+        >>> CacheClass = get_hf_cache_class()
+        >>> cache = CacheClass(r_bits=4, theta_bits=4)
+        >>> outputs = model.generate(**inputs, past_key_values=cache)
+    """
+    from .hf_patch import TurboQuantHFCache
+    return TurboQuantHFCache
+
+
+def patch_transformers():
+    """
+    Monkey-patch HuggingFace transformers to use TurboQuant by default.
+    
+    After calling this, all AutoModelForCausalLM.generate() calls will
+    use TurboQuantHFCache unless past_key_values is explicitly provided.
+    
+    Lazily imports the HF integration to avoid requiring 'transformers'
+    and 'torch' packages unless this function is actually called.
+    
+    Returns:
+        True if patching succeeded, False if already patched
+        
+    Raises:
+        ImportError: If 'transformers' or 'torch' is not installed
+        
+    Example:
+        >>> patch_transformers()
+        >>> model.generate(**inputs)  # Now uses TurboQuant compression
+    """
+    from .hf_patch import patch_transformers as _patch
+    return _patch()
