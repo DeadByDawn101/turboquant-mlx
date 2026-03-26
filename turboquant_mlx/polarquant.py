@@ -23,6 +23,8 @@ import math
 from typing import Optional, Tuple, NamedTuple
 from dataclasses import dataclass
 
+from .wht import WalshHadamardRotation, create_wht_rotation
+
 
 @dataclass
 class PolarQuantizedKV:
@@ -74,7 +76,7 @@ class PolarQuantizer:
         self.seed = seed
         
         # Will be initialized on first use based on head_dim
-        self.rotation_matrix = None
+        self._wht_rotation: Optional[WalshHadamardRotation] = None
         self._head_dim = None
         
         # Derived constants
@@ -82,30 +84,23 @@ class PolarQuantizer:
         self.theta_levels = 2 ** theta_bits
     
     def _init_rotation(self, head_dim: int):
-        """Initialize random rotation matrix for given head dimension."""
-        if self._head_dim == head_dim and self.rotation_matrix is not None:
+        """Initialize random rotation using fast Walsh-Hadamard Transform.
+        
+        WHT is O(n log n) vs O(n²) for Gram-Schmidt, providing ~4x speedup.
+        Uses SRHT (Subsampled Randomized Hadamard Transform): D @ H @ D
+        where D is random ±1 diagonal and H is normalized Hadamard.
+        """
+        if self._head_dim == head_dim and self._wht_rotation is not None:
             return
             
         self._head_dim = head_dim
         
         if not self.use_rotation:
-            self.rotation_matrix = None
+            self._wht_rotation = None
             return
         
-        # Generate random orthogonal matrix via Gram-Schmidt
-        mx.random.seed(self.seed)
-        random_matrix = mx.random.normal(shape=(head_dim, head_dim))
-        
-        # Orthogonalize using simple Gram-Schmidt
-        rows = []
-        for i in range(head_dim):
-            v = random_matrix[i]
-            for j in range(len(rows)):
-                v = v - mx.sum(v * rows[j]) * rows[j]
-            norm = mx.sqrt(mx.sum(v * v) + 1e-10)
-            rows.append(v / norm)
-        
-        self.rotation_matrix = mx.stack(rows)
+        # Use fast WHT rotation (O(n log n) vs O(n²) Gram-Schmidt)
+        self._wht_rotation = create_wht_rotation(head_dim, seed=self.seed)
     
     def _to_polar(self, x: mx.array) -> Tuple[mx.array, mx.array]:
         """
@@ -172,9 +167,9 @@ class PolarQuantizer:
         # Initialize rotation matrix if needed
         self._init_rotation(head_dim)
         
-        # Apply rotation preconditioning
-        if self.rotation_matrix is not None:
-            keys_rotated = mx.matmul(keys, self.rotation_matrix.T)
+        # Apply rotation preconditioning using fast WHT
+        if self._wht_rotation is not None:
+            keys_rotated = self._wht_rotation.rotate(keys)
         else:
             keys_rotated = keys
         
@@ -260,9 +255,9 @@ class PolarQuantizer:
         batch, num_heads, num_blocks, group_size, head_dim = keys_grouped.shape
         keys_padded = keys_grouped.reshape(batch, num_heads, num_blocks * group_size, head_dim)
         
-        # Apply inverse rotation
-        if self.rotation_matrix is not None:
-            keys_reconstructed = mx.matmul(keys_padded, self.rotation_matrix)
+        # Apply inverse rotation using fast WHT
+        if self._wht_rotation is not None:
+            keys_reconstructed = self._wht_rotation.rotate_inverse(keys_padded)
         else:
             keys_reconstructed = keys_padded
         
@@ -292,9 +287,9 @@ class PolarQuantizer:
         batch, num_heads, num_blocks, group_size, half_dim = quantized_keys.indices.shape
         head_dim = half_dim * 2
         
-        # Apply rotation to query
-        if self.rotation_matrix is not None:
-            query_rotated = mx.matmul(query, self.rotation_matrix.T)
+        # Apply rotation to query using fast WHT
+        if self._wht_rotation is not None:
+            query_rotated = self._wht_rotation.rotate(query)
         else:
             query_rotated = query
         
