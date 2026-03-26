@@ -770,6 +770,202 @@ class TestHFIntegration:
         assert "estimated_compression_ratio" in stats
 
 
+class TestGroveIntegration:
+    """Test Grove integration: SparseLoCo-style KV delta + DCT compression."""
+    
+    def test_sparse_kv_delta_instantiation(self):
+        """Test SparseKVDelta can be instantiated."""
+        from turboquant_mlx.grove_integration import SparseKVDelta
+        
+        delta_comp = SparseKVDelta(topk_ratio=0.1, error_decay=0.95, chunk_size=64)
+        
+        assert delta_comp.topk_ratio == 0.1
+        assert delta_comp.error_decay == 0.95
+        assert delta_comp.chunk_size == 64
+        assert delta_comp.compression_ratio == 10.0
+    
+    def test_sparse_kv_delta_compress_decompress(self):
+        """Test SparseKVDelta compress/decompress roundtrip."""
+        from turboquant_mlx.grove_integration import SparseKVDelta
+        
+        delta_comp = SparseKVDelta(topk_ratio=0.1)
+        
+        # Create test KV caches
+        kv_prev = mx.random.normal(shape=(BATCH, NUM_HEADS, SEQ_LEN, HEAD_DIM))
+        kv_new = kv_prev + mx.random.normal(shape=kv_prev.shape) * 0.1  # Small delta
+        
+        # Compress delta
+        compressed_delta, reconstructed = delta_comp.compress_delta(kv_new, kv_prev)
+        mx.eval(compressed_delta, reconstructed)
+        
+        # Shape should be preserved
+        assert compressed_delta.shape == kv_new.shape
+        assert reconstructed.shape == kv_new.shape
+        
+        # Decompress should work
+        decompressed = delta_comp.decompress_delta(compressed_delta, kv_prev)
+        mx.eval(decompressed)
+        
+        # Decompressed should equal reconstructed
+        error = mx.max(mx.abs(decompressed - reconstructed)).item()
+        assert error < 1e-5, f"Decompress error: {error}"
+    
+    def test_sparse_kv_delta_topk_sparsity(self):
+        """Test top-k sparsity ratio is respected."""
+        from turboquant_mlx.grove_integration import SparseKVDelta
+        
+        topk_ratio = 0.1  # Keep 10%
+        delta_comp = SparseKVDelta(topk_ratio=topk_ratio)
+        
+        # Create delta that should be sparsified
+        kv_prev = mx.zeros((1, 1, 100, 64))
+        kv_new = mx.random.normal(shape=kv_prev.shape)
+        
+        compressed_delta, _ = delta_comp.compress_delta(kv_new, kv_prev)
+        mx.eval(compressed_delta)
+        
+        # Count non-zero elements
+        flat = compressed_delta.reshape(-1)
+        nonzero_count = mx.sum(mx.abs(flat) > 1e-8).item()
+        total_count = flat.size
+        
+        actual_ratio = nonzero_count / total_count
+        expected_ratio = topk_ratio
+        
+        # Allow some tolerance due to discrete top-k
+        assert abs(actual_ratio - expected_ratio) < 0.02, \
+            f"Sparsity ratio {actual_ratio} != expected {expected_ratio}"
+    
+    def test_sparse_kv_delta_error_feedback(self):
+        """Test error feedback accumulates correctly."""
+        from turboquant_mlx.grove_integration import SparseKVDelta
+        
+        delta_comp = SparseKVDelta(topk_ratio=0.1, error_decay=0.9)
+        
+        # First compression
+        kv_prev = mx.zeros((1, 1, 100, 64))
+        kv_new = mx.random.normal(shape=kv_prev.shape)
+        delta_comp.compress_delta(kv_new, kv_prev)
+        
+        # Error buffer should be populated
+        assert delta_comp._error_buffer is not None
+        mx.eval(delta_comp._error_buffer)
+        
+        # Error buffer should have residuals (non-zero)
+        error_sum = mx.sum(mx.abs(delta_comp._error_buffer)).item()
+        assert error_sum > 0, "Error feedback should accumulate unsent values"
+        
+        # Reset should clear it
+        delta_comp.reset_error_buffer()
+        assert delta_comp._error_buffer is None
+    
+    def test_dct_kv_compressor_instantiation(self):
+        """Test DCTKVCompressor can be instantiated."""
+        from turboquant_mlx.grove_integration import DCTKVCompressor
+        
+        dct_comp = DCTKVCompressor(topk_components=32, chunk_size=64)
+        
+        assert dct_comp.topk_target == 32
+        assert dct_comp.chunk_target == 64
+    
+    def test_dct_kv_compressor_compress_decompress(self):
+        """Test DCTKVCompressor compress/decompress shape correctness."""
+        from turboquant_mlx.grove_integration import DCTKVCompressor
+        
+        dct_comp = DCTKVCompressor(topk_components=16, chunk_size=32)
+        
+        # Create test KV cache (last dim must be divisible by chunk_size)
+        kv = mx.random.normal(shape=(BATCH, NUM_HEADS, SEQ_LEN, HEAD_DIM))
+        
+        # Compress
+        indices, values = dct_comp.compress(kv)
+        mx.eval(indices, values)
+        
+        # Check compressed shapes
+        # Original: [1, 4, 128, 64] -> chunks: [1, 4, 128, 2, 32] -> topk: [1, 4, 128, 2, 16]
+        expected_n_chunks = HEAD_DIM // 32  # = 2
+        expected_topk = 16
+        assert indices.shape[-1] == expected_topk
+        assert values.shape[-1] == expected_topk
+        
+        # Decompress
+        original_shape = kv.shape
+        reconstructed = dct_comp.decompress(indices, values, original_shape)
+        mx.eval(reconstructed)
+        
+        # Shape should match original
+        assert reconstructed.shape == original_shape
+    
+    def test_dct_kv_compressor_reconstruction_quality(self):
+        """Test DCT compression preserves information reasonably."""
+        from turboquant_mlx.grove_integration import DCTKVCompressor
+        
+        # Use more DCT components for better quality
+        dct_comp = DCTKVCompressor(topk_components=48, chunk_size=64)
+        
+        kv = mx.random.normal(shape=(1, 1, 32, 64))
+        
+        indices, values = dct_comp.compress(kv)
+        reconstructed = dct_comp.decompress(indices, values, kv.shape)
+        mx.eval(kv, reconstructed)
+        
+        # Should have reasonable reconstruction (75% of components kept)
+        mse = mx.mean((kv - reconstructed) ** 2).item()
+        assert mse < 0.5, f"DCT reconstruction MSE too high: {mse}"
+    
+    def test_grove_awdl_discovery_fallback(self):
+        """Test GroveAWDLDiscovery graceful fallback when grove not installed."""
+        from turboquant_mlx.grove_integration import GroveAWDLDiscovery
+        
+        discovery = GroveAWDLDiscovery()
+        
+        # is_available should return bool without crashing
+        available = discovery.is_available()
+        assert isinstance(available, bool)
+        
+        # discover_peers should return list (even if empty)
+        peers = discovery.discover_peers(timeout=0.1)
+        assert isinstance(peers, list)
+        
+        # last_discovered should work
+        last = discovery.last_discovered
+        assert isinstance(last, list)
+    
+    def test_sparse_kv_delta_different_shapes(self):
+        """Test SparseKVDelta works with various tensor shapes."""
+        from turboquant_mlx.grove_integration import SparseKVDelta
+        
+        delta_comp = SparseKVDelta(topk_ratio=0.2)
+        
+        # Test different shapes
+        shapes = [
+            (64,),  # 1D
+            (32, 64),  # 2D
+            (1, 4, 64, 64),  # 4D (typical KV)
+        ]
+        
+        for shape in shapes:
+            kv_prev = mx.random.normal(shape=shape)
+            kv_new = kv_prev + mx.random.normal(shape=shape) * 0.1
+            
+            compressed, reconstructed = delta_comp.compress_delta(kv_new, kv_prev)
+            mx.eval(compressed, reconstructed)
+            
+            assert compressed.shape == shape, f"Shape mismatch for {shape}"
+            assert reconstructed.shape == shape, f"Shape mismatch for {shape}"
+            
+            delta_comp.reset_error_buffer()
+    
+    def test_imports_from_main_package(self):
+        """Test Grove integration classes are importable from main package."""
+        from turboquant_mlx import SparseKVDelta, DCTKVCompressor, GroveAWDLDiscovery
+        
+        # Should not raise
+        assert SparseKVDelta is not None
+        assert DCTKVCompressor is not None
+        assert GroveAWDLDiscovery is not None
+
+
 class TestLazyImports:
     """Test lazy import functions in __init__.py."""
     

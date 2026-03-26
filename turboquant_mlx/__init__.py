@@ -23,6 +23,7 @@ from .qjl import QJLSketch, qjl_compress, qjl_decompress
 from .polarquant import PolarQuantizer, polar_compress, polar_decompress
 from .turboquant import TurboQuantKVCache, turbo_compress, turbo_decompress
 from .mlx_attention import TurboQuantAttention, create_turbo_attention
+from .grove_integration import SparseKVDelta, DCTKVCompressor, GroveAWDLDiscovery
 
 __version__ = "0.1.0"
 __author__ = "RavenX AI"
@@ -43,6 +44,10 @@ __all__ = [
     # Attention
     "TurboQuantAttention",
     "create_turbo_attention",
+    # Grove Integration (SparseLoCo + DCT for distributed inference)
+    "SparseKVDelta",
+    "DCTKVCompressor",
+    "GroveAWDLDiscovery",
     # Lazy-loaded integrations
     "get_ollama_client",
     "get_hf_cache_class",
