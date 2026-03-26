@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="turboquant-mlx",
-    version="0.1.0",
+    version="2.0.0",
     description="TurboQuant KV Cache Compression for MLX (Apple Silicon)",
     author="RavenX AI",
     author_email="deadbydawn@ravenx.ai",
