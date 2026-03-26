@@ -1006,5 +1006,96 @@ class TestLazyImports:
             unpatch_transformers()
 
 
+class TestPersistence:
+    """Test persistence integration in main test file (key tests only)."""
+    
+    def test_save_load_roundtrip(self):
+        """Test save/load roundtrip preserves data."""
+        import tempfile
+        import shutil
+        from pathlib import Path
+        from turboquant_mlx.persistence import TurboQuantCache
+        
+        temp_dir = Path(tempfile.mkdtemp(prefix="turboquant_test_"))
+        try:
+            cache = TurboQuantCache(cache_dir=temp_dir, bits=4)
+            
+            # Create test data
+            keys = mx.random.normal(shape=(BATCH, NUM_HEADS, SEQ_LEN, HEAD_DIM))
+            values = mx.random.normal(shape=(BATCH, NUM_HEADS, SEQ_LEN, HEAD_DIM))
+            mx.eval(keys, values)
+            
+            original_states = [[keys, values]]
+            
+            # Save
+            result = cache.save(original_states, "test-roundtrip")
+            assert result["ratio"] > 1.0
+            
+            # Load
+            loaded_states, meta = cache.load("test-roundtrip")
+            assert loaded_states is not None
+            
+            # Check cosine similarity
+            orig_flat = keys.reshape(-1).astype(mx.float32)
+            loaded_flat = loaded_states[0][0].reshape(-1).astype(mx.float32)
+            mx.eval(orig_flat, loaded_flat)
+            
+            dot = float(mx.sum(orig_flat * loaded_flat))
+            norm_o = float(mx.sqrt(mx.sum(orig_flat ** 2)))
+            norm_l = float(mx.sqrt(mx.sum(loaded_flat ** 2)))
+            cosine = dot / (norm_o * norm_l + 1e-8)
+            
+            assert cosine > 0.99, f"Cosine sim {cosine} < 0.99"
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+    
+    def test_metadata_preserved(self):
+        """Test metadata survives save/load."""
+        import tempfile
+        import shutil
+        from pathlib import Path
+        from turboquant_mlx.persistence import TurboQuantCache
+        
+        temp_dir = Path(tempfile.mkdtemp(prefix="turboquant_test_"))
+        try:
+            cache = TurboQuantCache(cache_dir=temp_dir)
+            
+            keys = mx.random.normal(shape=(1, 2, 32, 32))
+            original_states = [[keys]]
+            
+            metadata = {"tokens": 4096, "model": "Qwen3.5-35B"}
+            cache.save(original_states, "test-meta", metadata=metadata)
+            
+            _, loaded_meta = cache.load("test-meta")
+            
+            assert loaded_meta["tokens"] == 4096
+            assert loaded_meta["model"] == "Qwen3.5-35B"
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+    
+    def test_list_caches(self):
+        """Test listing saved caches."""
+        import tempfile
+        import shutil
+        from pathlib import Path
+        from turboquant_mlx.persistence import TurboQuantCache
+        
+        temp_dir = Path(tempfile.mkdtemp(prefix="turboquant_test_"))
+        try:
+            cache = TurboQuantCache(cache_dir=temp_dir)
+            
+            for name in ["ctx-a", "ctx-b"]:
+                keys = mx.random.normal(shape=(1, 2, 16, 32))
+                cache.save([[keys]], name)
+            
+            contexts = cache.list()
+            assert len(contexts) == 2
+            names = [c["name"] for c in contexts]
+            assert "ctx-a" in names
+            assert "ctx-b" in names
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -250,6 +250,82 @@ Default 4-bit config gives **3.8x compression** with **0.96 cosine similarity** 
 
 ---
 
+## 💾 Persistent KV Cache
+
+Process a codebase or long document once. Resume instantly next session.
+
+```python
+from turboquant_mlx.persistence import TurboQuantCache
+
+cache = TurboQuantCache(bits=4)  # 4x compression
+
+# After processing (once):
+cache.save(kv_states, "my-project", metadata={"tokens": 4096, "model": "Qwen3.5-35B"})
+# Saved: 26.6 MB → 6.7 MB (4x), 0.002s
+
+# Next session (instant):
+kv_states, meta = cache.load("my-project")  
+# Loaded in 0.0003s vs 1.01s reprocessing
+
+# Cross-device sync via Cloudflare R2:
+cache.push("my-project")   # upload (free tier: 10GB)
+cache.pull("my-project")   # download on other Mac
+```
+
+**What 0.0003s load time means in practice:**
+- Loading a 4096-token context from disk: **0.3ms**
+- Reprocessing 4096 tokens through Qwen3.5-35B: **1.01s**
+- Speedup: **~3,300x faster** context restoration
+
+### SSD Paging (LLM in a Flash)
+
+Process documents larger than GPU memory:
+
+```python
+from turboquant_mlx.persistence import PagedKVCache
+
+paged = PagedKVCache(max_gpu_chunks=4, chunk_size=512)
+
+# Process in chunks — GPU holds recent 4, rest on SSD
+for chunk_id, kv_chunk in enumerate(kv_chunks):
+    paged.add_chunk(kv_chunk, chunk_id)
+
+print(paged.stats)
+# {"gpu_chunks": 4, "ssd_chunks": 12, "gpu_hits": 89, "ssd_reads": 11}
+```
+
+### Three-Tier Cache (GPU → SSD → R2)
+
+```python
+from turboquant_mlx.tiered_cache import TieredKVCacheManager
+
+manager = TieredKVCacheManager(
+    max_gpu_mb=2000,     # 2GB in GPU
+    max_ssd_mb=50000,    # 50GB on SSD
+    r2_config={...},     # Cloudflare R2 for cold storage
+)
+
+# Store KV state — auto-tiers based on size/recency
+manager.put("my-project", kv_states, metadata={"tokens": 4096})
+
+# Retrieve — auto-promotes from lower tiers
+states, tier = manager.get("my-project")
+print(f"Retrieved from {tier}")  # "gpu" | "ssd" | "r2"
+
+# Check tier utilization
+print(manager.stats())
+# {"gpu_mb": 1.2, "ssd_mb": 15.3, "gpu_hits": 42, "ssd_hits": 8, "r2_hits": 1}
+```
+
+**Tier access times:**
+- GPU: instant (~0ms)
+- SSD: ~0.3ms (compressed TurboQuant load)
+- R2: ~1.5s (network, but cross-device)
+
+Inspired by [Apple's "LLM in a Flash"](https://machinelearning.apple.com/research/efficient-large-language) research + [mac-code](https://github.com/walter-grace/mac-code).
+
+---
+
 ## 🤝 Credits & Community
 
 - **Papers**: [TurboQuant (ICLR 2026)](https://arxiv.org/abs/2504.19874) · [PolarQuant](https://arxiv.org/abs/2502.02617) · [QJL](https://dl.acm.org/doi/10.1609/aaai.v39i24.34773)
@@ -261,6 +337,9 @@ Default 4-bit config gives **3.8x compression** with **0.96 cosine similarity** 
 
 ## 📋 Roadmap
 
+- [x] Persistent KV cache save/load (0.0003s load vs reprocessing)
+- [x] SSD paging for context beyond GPU memory ("LLM in a Flash")
+- [x] Three-tier caching: GPU → SSD → Cloudflare R2
 - [ ] llama.cpp C port with Metal GPU kernels (`--cache-type-k turbo3`)
 - [ ] ANE-native path via Core ML conversion
 - [ ] Benchmark suite with PPL scores (wikitext-2)

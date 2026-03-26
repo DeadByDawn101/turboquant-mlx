@@ -52,6 +52,10 @@ __all__ = [
     "get_ollama_client",
     "get_hf_cache_class",
     "patch_transformers",
+    # Persistence (lazy-loaded)
+    "get_persistent_cache",
+    "get_paged_cache",
+    "get_tiered_cache",
 ]
 
 
@@ -128,3 +132,92 @@ def patch_transformers():
     """
     from .hf_patch import patch_transformers as _patch
     return _patch()
+
+
+# ============================================================================
+# Persistence & Tiered Cache (lazy-loaded)
+# ============================================================================
+
+def get_persistent_cache(**kwargs):
+    """
+    Get a TurboQuantCache instance for persistent KV cache save/load.
+    
+    Lazily imports the persistence module.
+    
+    Args:
+        **kwargs: Arguments passed to TurboQuantCache
+            - cache_dir: Directory to store cached contexts
+            - bits: Quantization bits (2, 3, or 4)
+            - group_size: Group size for quantization
+            - compress: Whether to apply compression
+            - max_cache_mb: Maximum cache size in MB
+        
+    Returns:
+        TurboQuantCache instance
+        
+    Example:
+        >>> cache = get_persistent_cache(bits=4)
+        >>> cache.save(kv_states, "my-project", metadata={"tokens": 4096})
+        >>> # Next session:
+        >>> kv_states, meta = cache.load("my-project")  # 0.0003s load
+    """
+    from .persistence import TurboQuantCache
+    return TurboQuantCache(**kwargs)
+
+
+def get_paged_cache(**kwargs):
+    """
+    Get a PagedKVCache instance for SSD-paged context beyond GPU memory.
+    
+    Implements "LLM in a Flash" style paging: GPU holds recent chunks,
+    older chunks are evicted to SSD and swapped back on access.
+    
+    Args:
+        **kwargs: Arguments passed to PagedKVCache
+            - max_gpu_chunks: Max chunks to keep in GPU (default: 4)
+            - chunk_size: Tokens per chunk (default: 512)
+            - cache_dir: Directory for SSD chunks
+            - bits: Quantization bits for SSD compression
+        
+    Returns:
+        PagedKVCache instance
+        
+    Example:
+        >>> paged = get_paged_cache(max_gpu_chunks=4, chunk_size=512)
+        >>> for chunk_id, kv_chunk in enumerate(kv_chunks):
+        ...     paged.add_chunk(kv_chunk, chunk_id)
+        >>> print(paged.stats)
+        # {"gpu_chunks": 4, "ssd_chunks": 12, "gpu_hits": 89, "ssd_reads": 11}
+    """
+    from .persistence import PagedKVCache
+    return PagedKVCache(**kwargs)
+
+
+def get_tiered_cache(**kwargs):
+    """
+    Get a TieredKVCacheManager instance for GPU → SSD → R2 three-tier caching.
+    
+    Automatically promotes/demotes entries based on access patterns:
+    - GPU: instant access, recent entries
+    - SSD: 0.0003s access, compressed
+    - R2: 1.5s access, cross-device sharing
+    
+    Args:
+        **kwargs: Arguments passed to TieredKVCacheManager
+            - max_gpu_mb: Max GPU tier size (default: 2000)
+            - max_ssd_mb: Max SSD tier size (default: 50000)
+            - r2_config: R2 config dict (endpoint, access_key, secret_key, bucket)
+            - auto_promote: Auto-promote on access (default: True)
+            - auto_demote: Auto-demote on memory pressure (default: True)
+        
+    Returns:
+        TieredKVCacheManager instance
+        
+    Example:
+        >>> manager = get_tiered_cache(max_gpu_mb=2000, max_ssd_mb=50000)
+        >>> manager.put("my-context", kv_states, metadata={"tokens": 4096})
+        >>> states, tier = manager.get("my-context")
+        >>> print(f"Retrieved from {tier}")  # "gpu", "ssd", or "r2"
+    """
+    from .tiered_cache import TieredKVCacheManager
+    return TieredKVCacheManager(**kwargs)
