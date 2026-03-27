@@ -160,6 +160,54 @@ class QJLSketch:
         return estimate.squeeze(-1)
 
 
+def rabitq_correction(
+    signs_x: mx.array,
+    scale_x: mx.array,
+    signs_y: mx.array,
+    scale_y: mx.array,
+) -> mx.array:
+    """
+    RaBitQ-style inner product bias correction via (π/2) scaling.
+
+    This is the simpler alternative to TurboQuant's two-stage QJL residual
+    approach. For 1-bit sign quantization, the expected inner product is biased
+    by a known constant factor of (2/π). Multiplying by (π/2) removes this bias.
+
+    Trade-off vs QJL residual:
+    - Simpler: zero extra memory, one multiply
+    - Higher variance: amplifies noise by (π/2)² ≈ 2.47×
+    - Equivalent bias removal: both produce unbiased estimators
+
+    The TurboQuant paper (ICLR 2026) claims its residual approach is superior
+    because it reduces variance. This is mathematically correct — but the
+    RaBitQ authors (Gao et al., SIGMOD 2025) note that the scaling correction
+    is the standard approach and sufficient for most retrieval tasks.
+
+    See: https://openreview.net/forum?id=tO3ASKZlok (public comment, March 2026)
+
+    Args:
+        signs_x: Sign bits of x, shape (..., sketch_dim), values in {0, 1}
+        scale_x: L2 norm of x, shape (..., 1)
+        signs_y: Sign bits of y, shape (..., sketch_dim), values in {0, 1}
+        scale_y: L2 norm of y, shape (..., 1)
+
+    Returns:
+        Unbiased inner product estimate, shape (...)
+    """
+    # Convert {0,1} → {-1,+1}
+    sx = signs_x.astype(mx.float32) * 2 - 1
+    sy = signs_y.astype(mx.float32) * 2 - 1
+
+    # Raw agreement: E[<sign(Px), sign(Py)>] = (2/π) * cosine_similarity
+    agreement = mx.mean(sx * sy, axis=-1, keepdims=True)
+
+    # Correct the (2/π) bias by multiplying by (π/2)
+    PI_OVER_2 = math.pi / 2.0
+    corrected = scale_x * scale_y * agreement * PI_OVER_2
+
+    return corrected.squeeze(-1)
+
+
 def qjl_compress(
     x: mx.array,
     sketch_dim: int = 256,

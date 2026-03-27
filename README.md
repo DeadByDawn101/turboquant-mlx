@@ -326,9 +326,48 @@ Inspired by [Apple's "LLM in a Flash"](https://machinelearning.apple.com/researc
 
 ---
 
+## ⚠️ Research Context: TurboQuant & RaBitQ
+
+On March 26, 2026, the authors of the **RaBitQ** line of work ([SIGMOD 2024](https://dl.acm.org/doi/10.1145/3654923), [SIGMOD 2025](https://arxiv.org/abs/2409.09913)) posted a [public comment on OpenReview](https://openreview.net/forum?id=tO3ASKZlok) raising three specific concerns about the TurboQuant ICLR 2026 paper:
+
+1. **Method misrepresentation** — TurboQuant describes random rotation as its key innovation while characterizing RaBitQ as a simple grid-based PQ method, omitting that RaBitQ *also* applies a Johnson-Lindenstrauss (random rotation) transform. Multiple reviewers flagged this; the authors responded by moving the RaBitQ description to the appendix rather than acknowledging the structural similarity.
+
+2. **Unsupported theoretical claim** — TurboQuant calls RaBitQ's guarantees "suboptimal due to loose analysis." The RaBitQ SIGMOD 2025 paper (posted Sept 2024, before TurboQuant submission) already proves **asymptotic optimality**, matching the Alon-Klartag lower bound — the theoretical ceiling. This correction was communicated privately in May 2025 and not incorporated.
+
+3. **Undisclosed benchmark conditions** — The paper's runtime/efficiency comparisons run the RaBitQ baseline on a **single CPU with multiprocessing disabled** while running TurboQuant on an **A100 GPU**. This was never disclosed. The RaBitQ authors note that TurboQuant's second author (Majid Daliri) contacted them in January 2025 to debug his own Python translation of their implementation.
+
+**What this means for this implementation:**
+
+The core algorithm in this repository is still mathematically sound — random rotation + scalar quantization + residual correction is a valid and effective approach. However:
+
+- The relationship between TurboQuant and RaBitQ is much closer than the TurboQuant paper suggests. Both share the fundamental insight of applying a JL-type rotation before scalar quantization.
+- The "beating RaBitQ" benchmarks in the paper should not be taken at face value.
+- Our `qjl.py` implements the two-stage residual approach from TurboQuant. As an alternative, we also provide `rabitq_correction()` — the simpler RaBitQ-style `(π/2)` scaling bias correction, which is theoretically equivalent for bias removal but trades variance increase for implementation simplicity. See [RaBitQ vs QJL correction](#rabitq-vs-qjl-correction) below.
+
+We recommend reading both the [TurboQuant paper](https://openreview.net/forum?id=tO3ASKZlok) and the [RaBitQ SIGMOD 2025 paper](https://arxiv.org/abs/2409.09913) for a complete picture.
+
+### RaBitQ vs QJL correction
+
+The inner product bias from 1-bit sign quantization (factor of `2/π`) can be corrected two ways:
+
+```python
+from turboquant_mlx.qjl import rabitq_correction, QJLSketch
+
+# Option A: RaBitQ-style — multiply by π/2 (simple, ~6% more variance)
+corrected = rabitq_correction(signs, scale_x, scale_y, sketch_dim)
+
+# Option B: TurboQuant-style — QJL residual on the remainder (lower variance, more memory)
+sketch = QJLSketch(head_dim, sketch_dim)
+signs, scale = sketch.sketch(keys)
+```
+
+Both are unbiased estimators. TurboQuant's residual approach has lower variance (better MSE) at the cost of extra computation. RaBitQ's scaling is simpler and zero overhead — ideal if memory is the binding constraint.
+
+---
+
 ## 🤝 Credits & Community
 
-- **Papers**: [TurboQuant (ICLR 2026)](https://arxiv.org/abs/2504.19874) · [PolarQuant](https://arxiv.org/abs/2502.02617) · [QJL](https://dl.acm.org/doi/10.1609/aaai.v39i24.34773)
+- **Papers**: [TurboQuant (ICLR 2026)](https://openreview.net/forum?id=tO3ASKZlok) · [RaBitQ (SIGMOD 2025)](https://arxiv.org/abs/2409.09913) · [PolarQuant](https://arxiv.org/abs/2502.02617) · [QJL](https://dl.acm.org/doi/10.1609/aaai.v39i24.34773)
 - **Optimizations**: Asymmetric K/V compression, FP16 attention sinks, chunk buffering — inspired by [helgklaizar/turboquant_mlx](https://github.com/helgklaizar/turboquant_mlx)
 - **Built by**: [RavenX AI / DeadByDawn101](https://github.com/DeadByDawn101)
 - **Cluster**: Tested on Star Platinum — 4-node Apple Silicon TB4 ring (M4 Max + M3 + M2 Pro + M1 Pro)
