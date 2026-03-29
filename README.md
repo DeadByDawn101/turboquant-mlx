@@ -388,3 +388,29 @@ Both are unbiased estimators. TurboQuant's residual approach has lower variance 
 ---
 
 *Built with 🖤 by RavenX AI*
+
+---
+
+## ⚠️ Implementation Status
+
+This repository is a **research and experimentation layer**, not a production-faithful implementation of the TurboQuant paper. Known gaps:
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| `mlx_kvcache.py` | Partial | PolarQuant applied ✅, QJL residual NOT applied in live path ❌ |
+| `hf_patch.py` | Simulation | Perturbs HF KV tensors, doesn't change attention kernel ❌ |
+| Compressed-domain attention | Not implemented | Requires custom Metal kernel — the key missing piece |
+| QJL correction in `qjl.py` | Math correct ✅ | But used in testing only, not wired into live cache path |
+
+**What works today:**
+- Compression/decompression roundtrip with PolarQuant + WHT rotation ✅
+- Drop-in mlx-lm cache interface ✅
+- All 75 tests passing ✅
+- RaBitQ-style `π/2` scaling correction (`rabitq_correction()`) as documented alternative ✅
+
+**What's needed for paper fidelity:**
+- Apply QJL signs in compressed domain (don't decompress keys per step)
+- Compute `score ≈ (π/2) × scale_q × scale_k × sign_agreement` directly
+- Custom Metal kernel or MLX custom op for compressed attention
+
+PRs welcome. See [issue #2](https://github.com/DeadByDawn101/turboquant-mlx/issues/2) for full technical discussion.
