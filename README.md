@@ -7,7 +7,11 @@
 [![Tests](https://img.shields.io/badge/tests-39%20passed-brightgreen)](https://github.com/DeadByDawn101/turboquant-mlx/actions)
 [![Version](https://img.shields.io/badge/version-2.0.0-purple)](https://github.com/DeadByDawn101/turboquant-mlx/releases/tag/v2.0.0)
 
-TurboQuant achieves **4.6x KV cache compression** with **~0% accuracy loss** on Apple Silicon. This enables running longer contexts and more concurrent sessions on M-series Macs — including multi-node distributed inference via [exo](https://github.com/exo-explore/exo).
+TurboQuant achieves **4.6x KV cache compression** with **~0% accuracy loss** on Apple Silicon.
+
+> **What this actually means:** KV cache compression helps the **decode phase** (token generation), not prefill. Peak VRAM during prefill is still determined by prompt length. What you gain is: faster decode bandwidth, longer effective KV cache during generation, and more concurrent decode sessions. It does *not* let you run larger models than your VRAM can fit.
+
+This enables running longer generation contexts and more concurrent sessions on M-series Macs — including multi-node distributed inference via [exo](https://github.com/exo-explore/exo).
 
 ---
 
